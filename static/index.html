@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>System Agent Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: { 500: '#6366f1', 600: '#4f46e5' },
+            darkbg: '#0f172a',
+            cardbg: '#1e293b'
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="bg-darkbg text-slate-100 flex h-screen font-sans antialiased overflow-hidden">
+
+  <aside class="w-64 bg-slate-900 border-r border-slate-800 p-4 flex flex-col justify-between shrink-0">
+    <div>
+      <div class="flex items-center gap-3 mb-8">
+        <div class="h-8 w-8 rounded-lg bg-brand-500 flex items-center justify-center font-bold text-white text-sm">AI</div>
+        <div>
+          <h1 class="font-semibold text-sm">System Agent</h1>
+          <p class="text-xs text-slate-400">Windows Task Automator</p>
+        </div>
+      </div>
+
+      <nav class="space-y-1">
+        <a href="#" class="flex items-center gap-2 px-3 py-2 rounded-md bg-slate-800 text-slate-100 text-sm font-medium">Active Session</a>
+        <a href="#" title="Coming soon" class="flex items-center gap-2 px-3 py-2 rounded-md text-slate-500 text-sm font-medium cursor-not-allowed">Execution Logs</a>
+        <a href="#" title="Coming soon" class="flex items-center gap-2 px-3 py-2 rounded-md text-slate-500 text-sm font-medium cursor-not-allowed">Security &amp; Scopes</a>
+      </nav>
+
+      <button id="newSession" class="mt-8 w-full px-3 py-2 rounded-md border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs font-medium transition-colors">
+        + New Session
+      </button>
+    </div>
+
+    <div class="p-3 bg-slate-800/50 rounded-lg border border-slate-700/50 text-xs text-slate-400 space-y-1">
+      <div class="flex justify-between items-center gap-2">
+        <span>Engine</span>
+        <span id="providerName" class="text-slate-200 font-mono truncate">...</span>
+      </div>
+      <div class="flex justify-between items-center">
+        <span>Model</span>
+        <span id="modelName" class="text-slate-200 font-mono truncate">...</span>
+      </div>
+      <div class="flex justify-between items-center">
+        <span>Status</span>
+        <span id="statusText" class="text-emerald-400 flex items-center gap-1">
+          <span class="h-1.5 w-1.5 bg-emerald-400 rounded-full"></span> Connected
+        </span>
+      </div>
+    </div>
+  </aside>
+
+  <main class="flex-1 flex flex-col h-full min-w-0">
+    <header class="h-14 border-b border-slate-800 px-6 flex items-center justify-between bg-slate-900/50 shrink-0">
+      <span id="envPath" class="text-sm font-medium text-slate-300 truncate">Local Environment</span>
+      <span id="approvalBadge" class="px-2 py-1 rounded bg-emerald-500/10 text-emerald-400 text-xs border border-emerald-500/20 shrink-0 ml-3">Human Approval ON</span>
+    </header>
+
+    <div id="chat" class="flex-1 overflow-y-auto p-6 space-y-6"></div>
+
+    <div class="p-4 border-t border-slate-800 bg-slate-900/50">
+      <form id="form" class="max-w-4xl mx-auto relative">
+        <input id="input" autocomplete="off"
+          placeholder="Ask the agent to run a command or manage files..."
+          class="w-full bg-slate-800 border border-slate-700/80 rounded-xl px-4 py-3 pr-32 text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:border-brand-500 transition-colors" />
+        <button id="send" type="submit"
+          class="absolute right-2 top-2 bottom-2 px-4 bg-brand-500 hover:bg-brand-600 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50">
+          Send
+        </button>
+      </form>
+    </div>
+  </main>
+
+<script>
+const chatEl = document.getElementById('chat');
+const form = document.getElementById('form');
+const input = document.getElementById('input');
+const sendBtn = document.getElementById('send');
+
+let history = [];
+let busy = false;
+let pendingApproval = null;
+
+const TOOL_TITLES = {
+  run_command: 'PowerShell command',
+  list_files: 'Listed directory',
+  read_file: 'Read file',
+  write_file: 'Wrote file',
+  fetch_url: 'Fetched URL'
+};
+
+function el(tag, classes, text) {
+  const node = document.createElement(tag);
+  if (classes) node.className = classes;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function scrollBottom() {
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+
+async function loadProviderInfo() {
+  try {
+    const res = await fetch('/api/provider');
+    const info = await res.json();
+    document.getElementById('providerName').textContent = info.provider;
+    document.getElementById('modelName').textContent = info.model.split('/').pop();
+    document.getElementById('envPath').textContent = 'Local Environment: ' + info.home;
+    const badge = document.getElementById('approvalBadge');
+    if (!info.approvals_required) {
+      badge.textContent = 'Autonomous Mode';
+      badge.className = 'px-2 py-1 rounded bg-red-500/10 text-red-400 text-xs border border-red-500/20 shrink-0 ml-3';
+    }
+  } catch (e) {
+    document.getElementById('statusText').innerHTML = '';
+    document.getElementById('statusText').append(el('span', 'h-1.5 w-1.5 bg-red-400 rounded-full inline-block'));
+    document.getElementById('statusText').append(document.createTextNode(' Offline'));
+  }
+}
+
+function addUserBubble(text) {
+  const wrap = el('div', 'flex justify-end');
+  wrap.append(el('div', 'bg-brand-600 text-white px-4 py-2.5 rounded-2xl rounded-tr-none max-w-xl text-sm shadow-sm whitespace-pre-wrap', text));
+  chatEl.append(wrap);
+  scrollBottom();
+}
+
+function newTurn() {
+  const wrap = el('div', 'flex gap-4 max-w-3xl');
+  const avatar = el('div', 'h-8 w-8 rounded-lg bg-indigo-500/20 text-indigo-400 flex items-center justify-center text-xs font-bold shrink-0', 'AI');
+  const body = el('div', 'space-y-3 w-full min-w-0');
+  body.append(el('div', 'text-xs text-slate-500 animate-pulse', 'Thinking...'));
+  wrap.append(avatar, body);
+  chatEl.append(wrap);
+  scrollBottom();
+  return { wrap, body };
+}
+
+function renderSteps(body, steps) {
+  body.querySelectorAll('.toolcard').forEach(n => n.remove());
+  const thinking = body.querySelector('.animate-pulse');
+  steps.forEach(step => body.insertBefore(buildToolCard(step), thinking));
+  scrollBottom();
+}
+
+function fmtArgs(step) {
+  if (step.tool === 'run_command' && step.args && step.args.command) return String(step.args.command);
+  try { return JSON.stringify(step.args, null, 2); } catch (e) { return String(step.args); }
+}
+
+function buildToolCard(step) {
+  const card = el('div', 'toolcard bg-slate-800/80 border border-slate-700/60 rounded-lg p-3 text-xs font-mono');
+
+  const head = el('div', 'flex justify-between items-center text-slate-400 mb-2 gap-2');
+  const label = el('span', 'flex items-center gap-2 min-w-0');
+  const dotCls = step.denied ? 'bg-amber-400'
+    : (step.ok ? 'bg-emerald-400' : 'bg-red-400');
+  label.append(el('span', `h-2 w-2 rounded-full shrink-0 ${dotCls}`));
+  label.append(el('span', 'truncate', TOOL_TITLES[step.tool] || step.tool));
+  head.append(label);
+  head.append(el('span', 'text-slate-500 shrink-0', `${step.duration_ms} ms`));
+  card.append(head);
+
+  card.append(el('div', 'bg-slate-900 p-2 rounded text-slate-300 overflow-x-auto whitespace-pre-wrap break-all', fmtArgs(step)));
+
+  if (step.denied) {
+    card.append(el('div', 'mt-2 text-amber-400', 'Denied by user'));
+    return card;
+  }
+
+  const details = el('details', 'mt-2');
+  const summary = el('summary', 'cursor-pointer text-slate-400 hover:text-slate-200 select-none', 'Output');
+  const pre = el('pre', 'mt-1 max-h-48 overflow-auto bg-slate-900 p-2 rounded text-slate-400 whitespace-pre-wrap break-all', step.output || '(no output)');
+  details.append(summary, pre);
+  card.append(details);
+  return card;
+}
+
+function buildApprovalCard(toolCall) {
+  const card = el('div', 'toolcard bg-amber-500/10 border border-amber-500/40 rounded-lg p-3 text-xs');
+
+  const head = el('div', 'flex items-center gap-2 mb-2 font-mono text-amber-300');
+  head.append(el('span', 'h-2 w-2 rounded-full bg-amber-400 animate-pulse'));
+  head.append(el('span', '', `Approval required: ${TOOL_TITLES[toolCall.name] || toolCall.name}`));
+  card.append(head);
+
+  let argText;
+  try { argText = JSON.stringify(JSON.parse(toolCall.arguments || '{}'), null, 2); }
+  catch (e) { argText = toolCall.arguments || ''; }
+  card.append(el('div', 'bg-slate-900 p-2 rounded text-slate-300 overflow-x-auto whitespace-pre-wrap break-all', argText));
+
+  const buttons = el('div', 'flex gap-2 mt-3 justify-end');
+  const denyBtn = el('button', 'px-3 py-1.5 rounded-md bg-slate-700 hover:bg-red-900/60 text-slate-200 font-medium transition-colors', 'Deny');
+  const allowBtn = el('button', 'px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white font-medium transition-colors', 'Approve');
+
+  denyBtn.onclick = () => respond(false, card);
+  allowBtn.onclick = () => respond(true, card);
+  buttons.append(denyBtn, allowBtn);
+  card.append(buttons);
+  return card;
+}
+
+function lastTurnBody() {
+  const turns = chatEl.querySelectorAll('.space-y-3.w-full');
+  return turns[turns.length - 1];
+}
+
+async function respond(approved, card) {
+  if (!pendingApproval || busy) return;
+  busy = true;
+  card.querySelectorAll('button').forEach(b => b.remove());
+  card.append(el('div', 'mt-2 font-medium ' + (approved ? 'text-emerald-400' : 'text-amber-400'), approved ? 'Approved - executing...' : 'Denied - informing agent'));
+  scrollBottom();
+
+  const payload = {
+    resume: {
+      state: pendingApproval.state,
+      tool_call: pendingApproval.tool_call,
+      approved
+    }
+  };
+  pendingApproval = null;
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    await handleResponse(await res.json());
+  } catch (e) {
+    finishTurnWithError('Network error: is the server running?');
+  } finally {
+    busy = false;
+  }
+}
+
+function finishTurnWithError(text) {
+  const body = lastTurnBody();
+  if (body) {
+    const think = body.querySelector('.animate-pulse');
+    if (think) think.remove();
+    body.append(el('div', 'bg-cardbg border border-red-500/40 p-4 rounded-2xl rounded-tl-none text-sm text-red-300 whitespace-pre-wrap', text));
+  }
+  scrollBottom();
+}
+
+async function handleResponse(data) {
+  const body = lastTurnBody();
+  if (!body) return;
+  renderSteps(body, data.steps || []);
+  const thinking = body.querySelector('.animate-pulse');
+  if (data.status === 'approval_required') {
+    if (thinking) thinking.remove();
+    pendingApproval = { state: data.state, tool_call: data.tool_call };
+    body.append(buildApprovalCard(data.tool_call));
+    scrollBottom();
+    return;
+  }
+  if (thinking) thinking.remove();
+  const errCls = data.error ? ' !border-red-500/50 !bg-[#241318] text-red-300' : '';
+  body.append(el('div', 'bg-cardbg border border-slate-800 p-4 rounded-2xl rounded-tl-none text-sm text-slate-200 whitespace-pre-wrap' + errCls, data.reply || ''));
+  history.push({ role: 'assistant', content: data.reply || '' });
+  scrollBottom();
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = input.value.trim();
+  if (!text || busy) return;
+  busy = true;
+  sendBtn.disabled = true;
+  addUserBubble(text);
+  history.push({ role: 'user', content: text });
+  input.value = '';
+  newTurn();
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, history: history.slice(0, -1) })
+    });
+    await handleResponse(await res.json());
+  } catch (e) {
+    finishTurnWithError('Network error: is the server running?');
+  } finally {
+    busy = false;
+    sendBtn.disabled = false;
+  }
+});
+
+document.getElementById('newSession').addEventListener('click', () => {
+  if (busy) return;
+  history = [];
+  pendingApproval = null;
+  chatEl.innerHTML = '';
+});
+
+loadProviderInfo();
+</script>
+</body>
+</html>

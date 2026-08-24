@@ -7,9 +7,10 @@ CF_BASE = "https://api.cloudflare.com/client/v4/accounts"
 
 
 class LLMResponse:
-    def __init__(self, content=None, tool_calls=None):
+    def __init__(self, content=None, tool_calls=None, usage=None):
         self.content = content
         self.tool_calls = tool_calls or []
+        self.usage = usage or {"input": 0, "output": 0}
 
 
 def _require_env(name):
@@ -70,7 +71,13 @@ def _cloudflare_chat(messages, tools):
     if response.status_code != 200:
         detail = response.text[:300]
         raise RuntimeError(f"Cloudflare API error {response.status_code}: {detail}")
-    message = response.json()["choices"][0]["message"]
+    data = response.json()
+    message = data["choices"][0]["message"]
+    raw_usage = data.get("usage") or {}
+    usage = {
+        "input": raw_usage.get("prompt_tokens", 0) or 0,
+        "output": raw_usage.get("completion_tokens", 0) or 0,
+    }
     tool_calls = []
     for index, call in enumerate(message.get("tool_calls") or []):
         function = call.get("function", {})
@@ -81,7 +88,7 @@ def _cloudflare_chat(messages, tools):
                 "arguments": function.get("arguments") or "{}",
             }
         )
-    return LLMResponse(message.get("content"), tool_calls)
+    return LLMResponse(message.get("content"), tool_calls, usage)
 
 
 def _anthropic_chat(messages, tools):
@@ -163,7 +170,14 @@ def _anthropic_chat(messages, tools):
             tool_calls.append(
                 {"id": block.id, "name": block.name, "arguments": json.dumps(block.input)}
             )
-    return LLMResponse("\n".join(content_parts) or None, tool_calls)
+    return LLMResponse(
+        "\n".join(content_parts) or None,
+        tool_calls,
+        {
+            "input": getattr(response.usage, "input_tokens", 0) or 0,
+            "output": getattr(response.usage, "output_tokens", 0) or 0,
+        },
+    )
 
 
 def chat(messages, tools):

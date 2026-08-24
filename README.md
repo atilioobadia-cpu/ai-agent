@@ -69,6 +69,10 @@ The agent has several independent safety layers:
 5. **Autonomous mode** (experts only) - set `REQUIRE_APPROVAL=false` to let the
    agent act without confirmation. The deny-list and path scope still apply.
 
+5. **Language control** - `AGENT_LANGUAGE` in `.env`: `english` (default),
+   `swahili`, or `auto` (mirror the user, English when unsure). The prompt
+   explicitly demands correct grammar either way.
+
 Note: this is a hardening layer for a local learning tool, not a true sandbox.
 A determined prompt-injection attempt may still produce unwanted-but-approved
 actions, so read every approval card. Do not expose this app to the internet.

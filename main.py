@@ -24,13 +24,8 @@ class ChatRequest(BaseModel):
     resume: dict | None = None
 
 
-class ChatResponse(BaseModel):
-    status: str
-    reply: str | None = None
-    steps: list = []
-    tool_call: dict | None = None
-    state: dict | None = None
-    error: bool = False
+class SettingsRequest(BaseModel):
+    require_approval: bool
 
 
 @app.get("/")
@@ -45,33 +40,42 @@ def provider_info():
         model = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5")
     else:
         model = os.environ.get("CF_MODEL", "@cf/zai-org/glm-4.7-flash")
+    allowed = os.environ.get(
+        "ALLOWED_PATHS",
+        str(Path(__file__).parent),
+    )
+    first_root = [p.strip() for p in allowed.split(";") if p.strip()]
     return {
         "provider": provider,
         "model": model,
         "home": str(Path.home()),
         "approvals_required": _approvals_required(),
-        "allowed_paths": os.environ.get(
-            "ALLOWED_PATHS",
-            str(Path(__file__).parent),
-        ),
+        "workspace": first_root[0] if first_root else str(Path(__file__).parent),
+        "allowed_paths": allowed,
     }
 
 
+@app.post("/api/settings")
+def update_settings(request: SettingsRequest):
+    os.environ["REQUIRE_APPROVAL"] = "true" if request.require_approval else "false"
+    return {"approvals_required": _approvals_required()}
+
+
 @app.post("/api/chat")
-def chat_endpoint(request: ChatRequest) -> ChatResponse:
+def chat_endpoint(request: ChatRequest):
     try:
         if request.resume is not None:
             state = request.resume.get("state") or {}
             call = request.resume.get("tool_call") or {}
             approved = bool(request.resume.get("approved"))
             if not state or not call:
-                return ChatResponse(status="error", reply="Malformed resume payload.", error=True)
+                return {"status": "error", "reply": "Malformed resume payload.", "error": True}
             event = decide(state, approved)
         elif request.message and request.message.strip():
             state = start(request.message.strip(), request.history)
             event = advance(state)
         else:
-            return ChatResponse(status="error", reply="Empty message.", error=True)
+            return {"status": "error", "reply": "Empty message.", "error": True}
 
         rounds = 0
         while event["type"] == "approval_required" and not _approvals_required() and rounds < 20:
@@ -79,14 +83,20 @@ def chat_endpoint(request: ChatRequest) -> ChatResponse:
             rounds += 1
 
         if event["type"] == "approval_required":
-            return ChatResponse(
-                status="approval_required",
-                tool_call=event["tool_call"],
-                steps=state.get("steps", []),
-                state=state,
-            )
-        return ChatResponse(status="done", reply=event["reply"], steps=state.get("steps", []))
+            return {
+                "status": "approval_required",
+                "tool_call": event["tool_call"],
+                "events": state.get("feed", []),
+                "usage": state.get("usage", {}),
+                "state": state,
+            }
+        return {
+            "status": "done",
+            "reply": event["reply"],
+            "events": state.get("feed", []),
+            "usage": state.get("usage", {}),
+        }
     except RuntimeError as exc:
-        return ChatResponse(status="error", reply=f"Configuration problem: {exc}", error=True)
+        return {"status": "error", "reply": f"Configuration problem: {exc}", "error": True}
     except Exception as exc:
-        return ChatResponse(status="error", reply=f"Agent error: {type(exc).__name__}: {exc}", error=True)
+        return {"status": "error", "reply": f"Agent error: {type(exc).__name__}: {exc}", "error": True}

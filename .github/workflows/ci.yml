@@ -1,4 +1,5 @@
 name: CI
+# Refresh against the latest centralized CI checks.
 
 # Reusable CI template revision: 1b557ee
 

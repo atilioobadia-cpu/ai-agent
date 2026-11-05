@@ -1,5 +1,7 @@
 name: CI
 
+# Reusable CI template revision: 1b557ee
+
 on:
   push:
   pull_request:

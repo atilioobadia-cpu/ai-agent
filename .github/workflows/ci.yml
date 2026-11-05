@@ -1,0 +1,14 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repository-ci:
+    name: Reusable repository checks
+    uses: atilioobadia-cpu/dev-lab/.github/workflows/reusable-ci.yml@main
